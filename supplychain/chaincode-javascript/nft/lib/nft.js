@@ -4,51 +4,85 @@ const { Contract } = require('fabric-contract-api');
 
 class NFTContract extends Contract {
 
-    // Crée un nouveau NFT représentant un produit agricole
-    async createNFT(ctx, id, owner, name, category, description, metadata, rfid, qrCode) {
-        // Vérification que le NFT n'existe pas déjà
+    // Crée un nouveau NFT parent représentant une récolte
+    async createHarvestNFT(ctx, id, owner, name, category, description, metadata, organicCertificate) {
+        // Vérification que le NFT parent n'existe pas déjà
         const existingNFT = await ctx.stub.getState(id);
         if (existingNFT && existingNFT.length > 0) {
-            throw new Error(`Le NFT avec l'ID ${id} existe déjà.`);
+            throw new Error(`Le NFT parent avec l'ID ${id} existe déjà.`);
         }
 
-        // Création de l'objet NFT
-        const nft = {
-            id,                     // Identifiant unique du NFT
-            owner,                  // Propriétaire actuel du NFT
-            name,                   // Nom du produit agricole
-            category,               // Catégorie du produit (ex. : fruits, légumes)
-            description,            // Description du produit
-            metadata,               // Métadonnées supplémentaires (ex. : images, spécifications)
-            rfid,                   // Étiquette RFID pour le suivi en temps réel
-            qrCode,                 // QR code pour consultation des informations
-            interactors: [owner],   // Liste des acteurs ayant interagi avec le NFT
+        // Création de l'objet NFT parent
+        const parentNFT = {
+            id,                     // Identifiant unique du NFT parent
+            owner,                  // Propriétaire actuel
+            name,                   // Nom de la récolte
+            category,               // Catégorie du produit
+            description,            // Description de la récolte
+            metadata,               // Métadonnées supplémentaires
+            organicCertificate,     // Certificat biologique de la récolte
+            type: 'parent',         // Type de NFT
+            children: [],           // Liste des NFTs enfants liés à ce parent
+            interactors: [owner],   // Liste des acteurs ayant possedé ce NFT
         };
 
-        // Stockage du NFT dans la blockchain
-        await ctx.stub.putState(id, Buffer.from(JSON.stringify(nft)));
-        console.log(`NFT cree avec succes: ${id}`);
-        return `NFT cree avec succes pour: ${name}`;
+        // Stockage du NFT parent dans la blockchain
+        await ctx.stub.putState(id, Buffer.from(JSON.stringify(parentNFT)));
+        console.log(`NFT parent cree avec succes: ${id}`);
+        return `NFT parent cree avec succes pour: ${name}`;
     }
 
-    // Transfère la propriété d'un NFT à un nouveau propriétaire
+    // Crée un NFT enfant à partir des données RFID et lie ce NFT à un NFT parent
+    async createProductNFT(ctx, rfidId, parentId, owner, qrcode, metadata) {
+        // Vérifier si un NFT enfant existe déjà pour cet RFID
+        const existingNFT = await ctx.stub.getState(rfidId);
+        if (existingNFT && existingNFT.length > 0) {
+            throw new Error(`Un NFT enfant avec l'ID RFID ${rfidId} existe déjà.`);
+        }
+
+        // Récupérer le NFT parent pour validation
+        const parentNFTBytes = await ctx.stub.getState(parentId);
+        if (!parentNFTBytes || parentNFTBytes.length === 0) {
+            throw new Error(`NFT parent non trouvé : ${parentId}`);
+        }
+
+        const parentNFT = JSON.parse(parentNFTBytes.toString());
+        
+
+        // Création du NFT enfant
+        const childNFT = {
+            id: rfidId,             // Identifiant unique du NFT enfant
+            parentId,               // Référence au NFT parent
+            qrcode,                 // Qr code associé au produit
+            owner,                  // Propriétaire actuel du produit
+            metadata: JSON.parse(metadata), // Métadonnées (ex. poids, grade)
+            type: 'child',          // Type de NFT
+            interactors: [owner],   // Liste des acteurs ayant interagi avec ce produit
+        };
+
+        // Lier le NFT enfant au parent
+        parentNFT.children.push(rfidId);
+
+        // Mise à jour du NFT parent avec la liste des enfants
+        await ctx.stub.putState(parentId, Buffer.from(JSON.stringify(parentNFT)));
+
+        // Stocker le NFT enfant sur la blockchain
+        await ctx.stub.putState(rfidId, Buffer.from(JSON.stringify(childNFT)));
+
+        console.log(`NFT enfant cree avec succes: ${rfidId}`);
+        return `NFT enfant cree avec succes pour le produit ayant l'ID RFID: ${rfidId}`;
+    }
+
+    // Transfère la propriété d'un NFT (enfant ou parent) à un nouveau propriétaire
     async transferNFT(ctx, id, newOwner) {
-        // Vérification des autorisations
-        const currentUser = ctx.clientIdentity.getID(); // Récupération de l'identité du demandeur
         const nftBytes = await ctx.stub.getState(id);
         if (!nftBytes || nftBytes.length === 0) {
             throw new Error(`NFT non trouvé: ${id}`);
         }
 
-        // Conversion des bytes en objet NFT
         const nft = JSON.parse(nftBytes.toString());
 
-        // Vérification que l'utilisateur actuel est le propriétaire
-        if (nft.owner !== currentUser) {
-            throw new Error(`Transfert non autorisé: vous n'êtes pas le propriétaire de ce NFT.`);
-        }
-
-        // Mise à jour du propriétaire du NFT
+        // Mise à jour du propriétaire
         nft.owner = newOwner;
 
         // Ajout du nouvel acteur propriétaire à la liste des interacteurs
@@ -62,34 +96,43 @@ class NFTContract extends Contract {
         return `NFT transféré avec succès à: ${newOwner}`;
     }
 
-    // Récupère un NFT par ID
+    // Récupère un NFT (parent ou enfant) par ID
     async readNFT(ctx, id) {
-        // Récupération de l'état du NFT
         const nftBytes = await ctx.stub.getState(id);
         if (!nftBytes || nftBytes.length === 0) {
             throw new Error(`NFT non trouvé: ${id}`);
         }
 
-        // Conversion des bytes en objet NFT
         const nft = JSON.parse(nftBytes.toString());
-// Retourne l'objet NFT sous forme JSON
-return JSON.stringify(nft, null, 2);
-        //console.log(`NFT récupéré avec succès: ${id}`);
-        //return nftBytes.toString();
+        return JSON.stringify(nft, null, 2);
+    }
+
+    // Récupère les enfants d'un NFT parent
+    async getChildren(ctx, parentId) {
+        const parentNFTBytes = await ctx.stub.getState(parentId);
+        if (!parentNFTBytes || parentNFTBytes.length === 0) {
+            throw new Error(`NFT parent non trouvé: ${parentId}`);
+        }
+
+        const parentNFT = JSON.parse(parentNFTBytes.toString());
+
+        if (parentNFT.type !== 'parent') {
+            throw new Error(`L'ID ${parentId} ne correspond pas à un NFT parent.`);
+        }
+
+        return parentNFT.children;
     }
 
     // Récupère la liste des interacteurs d'un NFT
     async getInteractors(ctx, id) {
         const nftBytes = await ctx.stub.getState(id);
         if (!nftBytes || nftBytes.length === 0) {
-            throw new Error(`NFT non trouvé: ${id}`);
+            throw new Error('NFT non trouvé: ${id}');
         }
 
         const nft = JSON.parse(nftBytes.toString());
-        console.log(`Liste des interacteurs récupérée pour le NFT: ${id}`);
         return nft.interactors;
     }
 }
 
-// Instanciation du chaincode
 module.exports = NFTContract;
